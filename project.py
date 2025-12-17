@@ -1,305 +1,315 @@
 import numpy as np
 
 # =========================================================
-# 1. Power method for dominant eigenpair
+# SVD + LDA Image Classification Project
+#
+# IMPORTANT:
+# - Do not change function names or signatures.
+# - Implement the five required functions below:
+#     power_method, svd_compress, svd_features, lda_train, lda_predict
 # =========================================================
 
+
+# =========================================================
+# 1. Power method for dominant eigenpair (symmetric matrix)
+# =========================================================
 def power_method(A, x0, maxit, tol):
-    """Approximate the dominant eigenvalue and eigenvector of a real symmetric matrix A.
+    """
+    Approximate the dominant eigenvalue/eigenvector of a real symmetric matrix A
+    using the power method.
 
     Parameters
     ----------
     A : (n, n) ndarray
         Real symmetric matrix.
     x0 : (n,) ndarray
-        Initial guess for eigenvector (nonzero).
+        Initial guess (must be nonzero).
     maxit : int
         Maximum number of iterations.
     tol : float
-        Tolerance for convergence in relative change of eigenvalue.
+        Convergence tolerance on successive eigenvalue estimates.
 
     Returns
     -------
     lam : float
         Approximate dominant eigenvalue.
-    v : (n,) ndarray
-        Approximate unit eigenvector (||v||_2 = 1).
-    iters : int
-        Number of iterations performed.
+    x : (n,) ndarray
+        Approximate dominant eigenvector (unit 2-norm).
     """
-    A = np.asarray(A, dtype=float)
+    A = np.asarray(A)
+    if A.ndim != 2 or A.shape[0] != A.shape[1]:
+        raise ValueError("A must be a square matrix")
     n = A.shape[0]
+
     x = np.asarray(x0, dtype=float).reshape(-1)
-
     if x.size != n:
-        # fall back to a deterministic nonzero vector if x0 shape is unexpected
-        x = np.ones(n, dtype=float)
-
-    # normalize (guard against near-zero)
+        raise ValueError("x0 must have shape (n,)")
     nx = np.linalg.norm(x)
-    if nx <= 0.0 or not np.isfinite(nx):
+    if nx == 0:
+        # fall back to a deterministic nonzero vector
         x = np.ones(n, dtype=float)
         nx = np.linalg.norm(x)
     x = x / nx
 
-    lam_old = 0.0
-    iters = 0
+    lam_old = None
+    lam = float(x @ (A @ x))
 
-    for k in range(int(maxit)):
-        y = A @ x
-        ny = np.linalg.norm(y)
-
-        # If A @ x is ~0, then x is in (approx) nullspace; stop.
-        if ny == 0.0 or not np.isfinite(ny):
+    for _ in range(int(maxit)):
+        z = A @ x
+        nz = np.linalg.norm(z)
+        if nz == 0:
+            # A maps x to 0; dominant eigenvalue is 0
             lam = 0.0
-            iters = k + 1
-            return lam, x, iters
+            break
+        x = z / nz
 
-        x = y / ny
-
-        # Rayleigh quotient (stable for symmetric A)
-        lam = float(x @ (A @ x))
-
-        iters = k + 1
-        if k > 0:
-            denom = max(1.0, abs(lam))
-            if abs(lam - lam_old) <= tol * denom:
+        lam = float(x @ (A @ x))  # Rayleigh quotient
+        if lam_old is not None:
+            # relative/absolute hybrid stopping
+            if abs(lam - lam_old) <= tol * max(1.0, abs(lam)):
                 break
         lam_old = lam
 
-    return lam, x, iters
+    return lam, x
 
 
 # =========================================================
-# 2. Rank-k image compression via SVD
+# 2. Rank-k image approximation using SVD
 # =========================================================
-
 def svd_compress(image, k):
-    """Compute a rank-k approximation of a grayscale image using SVD.
+    """
+    Compute a rank-k approximation of a grayscale image using SVD.
 
     Parameters
     ----------
     image : (m, n) ndarray
-        Grayscale image matrix.
+        Image matrix.
     k : int
-        Target rank (1 <= k <= min(m, n)).
+        Target rank (k >= 1).
 
     Returns
     -------
     image_k : (m, n) ndarray
-        Rank-k approximation of the image.
+        Rank-k approximation.
     rel_error : float
-        Relative Frobenius error ||image - image_k||_F / ||image||_F.
-    compression_ratio : float
-        (Number of stored parameters in image_k) / (m * n).
+        Relative Frobenius error ||A - A_k||_F / ||A||_F.
     """
     A = np.asarray(image, dtype=float)
-    m, n = A.shape
-    r = min(m, n)
-    k = int(k)
+    if A.ndim != 2:
+        raise ValueError("image must be a 2D array")
     if k < 1:
-        k = 1
-    if k > r:
-        k = r
+        raise ValueError("k must be >= 1")
 
-    # Full_matrices=False gives compact SVD, cheaper and sufficient for rank-k reconstruction.
-    U, S, Vt = np.linalg.svd(A, full_matrices=False)
+    U, s, Vt = np.linalg.svd(A, full_matrices=False)
+    r = s.size
+    k_eff = int(min(k, r))
 
-    Uk = U[:, :k]
-    Sk = S[:k]
-    Vtk = Vt[:k, :]
+    # A_k = U_k diag(s_k) V_k^T
+    Ak = (U[:, :k_eff] * s[:k_eff]) @ Vt[:k_eff, :]
 
-    # rank-k reconstruction: Uk diag(Sk) Vtk
-    A_k = (Uk * Sk) @ Vtk
-
-    # Relative Frobenius error
     denom = np.linalg.norm(A, ord="fro")
-    if denom == 0.0:
+    if denom == 0:
         rel_error = 0.0
     else:
-        rel_error = float(np.linalg.norm(A - A_k, ord="fro") / denom)
+        rel_error = float(np.linalg.norm(A - Ak, ord="fro") / denom)
 
-    # store Uk (m*k) + Vtk (k*n) + Sk (k)
-    compression_ratio = float(k * (m + n + 1) / (m * n))
-
-    return A_k, rel_error, compression_ratio
+    return Ak, rel_error
 
 
 # =========================================================
-# 3. SVD-based feature extraction
+# 3. Build feature vector from image singular values
 # =========================================================
-
 def svd_features(image, p):
-    """Extract SVD-based features from a grayscale image.
+    """
+    Extract SVD-based features from a grayscale image.
+
+    Feature vector:
+        [normalized sigma_1, ..., normalized sigma_p, r_0.9, r_0.95]
+
+    where r_alpha is the smallest integer r such that
+        sum_{i=1}^r sigma_i^2 >= alpha * sum_{i} sigma_i^2.
 
     Parameters
     ----------
     image : (m, n) ndarray
         Grayscale image matrix.
     p : int
-        Number of leading singular values to use (p <= min(m, n)).
+        Number of leading singular values to use.
 
     Returns
     -------
     feat : (p + 2,) ndarray
-        Feature vector consisting of:
-        [normalized sigma_1, ..., normalized sigma_p, r_0.9, r_0.95]
+        Feature vector.
     """
     A = np.asarray(image, dtype=float)
+    if A.ndim != 2:
+        raise ValueError("image must be a 2D array")
     m, n = A.shape
-    r = min(m, n)
-    p = int(p)
-    if p < 1:
-        p = 1
-    if p > r:
-        p = r
+    rmax = min(m, n)
+    if p < 1 or p > rmax:
+        raise ValueError("p must satisfy 1 <= p <= min(m,n)")
 
-    # singular values only
-    S = np.linalg.svd(A, full_matrices=False, compute_uv=False)
-
-    # normalize singular values (avoid divide-by-zero)
-    ssum = float(np.sum(S))
-    if ssum > 0.0 and np.isfinite(ssum):
-        sig_norm = S[:p] / ssum
+    s = np.linalg.svd(A, compute_uv=False)
+    # Normalize singular values (scale-invariant features)
+    s_sum = float(np.sum(s))
+    if s_sum == 0.0:
+        lead = np.zeros(p, dtype=float)
     else:
-        sig_norm = S[:p].copy()
+        lead = (s[:p] / s_sum).astype(float)
 
-    # energy ratios based on squared singular values
-    energy = S * S
-    total_energy = float(np.sum(energy))
-    if total_energy > 0.0 and np.isfinite(total_energy):
-        cum = np.cumsum(energy) / total_energy
-        r_90 = float(np.searchsorted(cum, 0.90) + 1)
-        r_95 = float(np.searchsorted(cum, 0.95) + 1)
+    # Energy ratios using squared singular values
+    s2 = s * s
+    total_energy = float(np.sum(s2))
+    if total_energy == 0.0:
+        r90 = 0.0
+        r95 = 0.0
     else:
-        # degenerate (all-zero) image: define ranks as 0
-        r_90 = 0.0
-        r_95 = 0.0
+        c = np.cumsum(s2) / total_energy
+        r90 = float(np.searchsorted(c, 0.90) + 1)
+        r95 = float(np.searchsorted(c, 0.95) + 1)
 
-    feat = np.concatenate([sig_norm.astype(float), np.array([r_90, r_95], dtype=float)])
+    feat = np.concatenate([lead, np.array([r90, r95], dtype=float)])
     return feat
 
 
 # =========================================================
 # 4. Two-class LDA: training
 # =========================================================
-
 def lda_train(X, y):
-    """Train a two-class Linear Discriminant Analysis (LDA) classifier.
+    """
+    Train a two-class Linear Discriminant Analysis classifier.
 
     Parameters
     ----------
     X : (N, d) ndarray
         Feature matrix.
     y : (N,) ndarray
-        Labels (0 or 1).
+        Binary labels (0/1 or -1/+1). Any two distinct values are accepted.
 
     Returns
     -------
     w : (d,) ndarray
-        Discriminant direction vector (not necessarily unit length).
+        Discriminant direction.
     threshold : float
-        Threshold in 1D projected space for classifying 0 vs 1.
+        Classification threshold on the score z = X @ w:
+            predict 1 if z >= threshold else 0.
     """
     X = np.asarray(X, dtype=float)
     y = np.asarray(y).reshape(-1)
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array")
+    if y.size != X.shape[0]:
+        raise ValueError("y must have length N")
 
-    X0 = X[y == 0]
-    X1 = X[y == 1]
+    # Map labels to {0,1} deterministically
+    classes = np.unique(y)
+    if classes.size != 2:
+        raise ValueError("lda_train expects exactly two classes")
+    y01 = (y == classes[1]).astype(int)
 
-    # Means (handle edge cases defensively)
-    if X0.size == 0 or X1.size == 0:
-        # If a class is missing, return a trivial classifier
-        d = X.shape[1]
-        w = np.zeros(d, dtype=float)
-        threshold = 0.0
-        return w, threshold
+    X0 = X[y01 == 0]
+    X1 = X[y01 == 1]
+    if X0.shape[0] == 0 or X1.shape[0] == 0:
+        raise ValueError("Both classes must have at least one sample")
 
-    mu0 = X0.mean(axis=0)
-    mu1 = X1.mean(axis=0)
+    mu0 = np.mean(X0, axis=0)
+    mu1 = np.mean(X1, axis=0)
 
     # Within-class scatter
-    C0 = X0 - mu0
-    C1 = X1 - mu1
-    Sw = C0.T @ C0 + C1.T @ C1
+    X0c = X0 - mu0
+    X1c = X1 - mu1
+    Sw = X0c.T @ X0c + X1c.T @ X1c
 
+    # Light Tikhonov regularization for numerical stability
     d = Sw.shape[0]
-    tr = float(np.trace(Sw))
-    lam = 1e-6 * tr / d if tr > 0.0 and np.isfinite(tr) else 1e-6
+    trace = float(np.trace(Sw))
+    lam = 1e-6 * (trace / d if d > 0 else 1.0) + 1e-12
     Sw_reg = Sw + lam * np.eye(d)
 
-    w = np.linalg.solve(Sw_reg, (mu1 - mu0))
+    b = (mu1 - mu0)
 
-    # Threshold in projected space: midpoint of projected class means
-    m0 = float(w @ mu0)
-    m1 = float(w @ mu1)
+    # Solve Sw w = (mu1 - mu0)
+    try:
+        w = np.linalg.solve(Sw_reg, b)
+    except np.linalg.LinAlgError:
+        # Fallback: least squares
+        w = np.linalg.lstsq(Sw_reg, b, rcond=None)[0]
+
+    w = w.reshape(-1)
+
+    # Threshold at the midpoint of projected class means
+    m0 = float(mu0 @ w)
+    m1 = float(mu1 @ w)
     threshold = 0.5 * (m0 + m1)
 
-    return w, threshold
+    # Ensure class-1 has larger projection than class-0 for the >= rule
+    if m1 < m0:
+        w = -w
+        threshold = -threshold
+
+    return w, float(threshold)
 
 
 # =========================================================
 # 5. Two-class LDA: prediction
 # =========================================================
-
 def lda_predict(X, w, threshold):
-    """Predict class labels using a trained LDA classifier.
+    """
+    Predict labels for samples using the trained LDA model.
 
     Parameters
     ----------
     X : (N, d) ndarray
         Feature matrix.
     w : (d,) ndarray
-        Discriminant direction (from lda_train).
+        Discriminant direction from lda_train.
     threshold : float
-        Threshold (from lda_train).
+        Threshold from lda_train.
 
     Returns
     -------
-    y_pred : (N,) ndarray
-        Predicted labels (0 or 1).
+    y_pred : (N,) ndarray of int
+        Predicted labels in {0,1}.
     """
     X = np.asarray(X, dtype=float)
     w = np.asarray(w, dtype=float).reshape(-1)
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array")
+    if X.shape[1] != w.size:
+        raise ValueError("Dimension mismatch between X and w")
+
     z = X @ w
-    return (z >= threshold).astype(int)
+    y_pred = (z >= float(threshold)).astype(int)
+    return y_pred
 
 
+# =========================================================
+# Local smoke test (not used by autograder)
+# =========================================================
 def _example_run():
-    """Run a tiny end-to-end test on the example dataset, if available.
-
-    This function is for local testing only and will NOT be called by the autograder.
+    """
+    Run a tiny end-to-end test if 'project_data_example.npz' exists.
+    This is for local testing only and will NOT be called by the autograder.
     """
     try:
         data = np.load("project_data_example.npz")
     except OSError:
-        try:
-            data = np.load("project_data.npz")
-        except OSError:
-            print("No example data file found ('project_data_example.npz' or 'project_data.npz').")
-            return
+        print("No example dataset found (project_data_example.npz).")
+        return
 
     X_train = data["X_train"]
     y_train = data["y_train"]
     X_test = data["X_test"]
     y_test = data["y_test"]
 
-    print("X_train shape:", X_train.shape)
-    print("X_test shape :", X_test.shape)
+    # Extract features per image
+    p = min(20, min(X_train.shape[1], X_train.shape[2]))
+    Xf_train = np.vstack([svd_features(img, p) for img in X_train])
+    Xf_test  = np.vstack([svd_features(img, p) for img in X_test])
 
-    p = min(32, min(X_train.shape[1], X_train.shape[2]))
-    print(f"Using p = {p} leading singular values for features.")
-
-    def build_features(X):
-        return np.vstack([svd_features(img, p) for img in X])
-
-    Xf_train = build_features(X_train)
-    Xf_test = build_features(X_test)
-
-    w, threshold = lda_train(Xf_train, y_train)
-    y_pred = lda_predict(Xf_test, w, threshold)
-
-    acc = float(np.mean(y_pred == y_test))
+    w, thr = lda_train(Xf_train, y_train)
+    y_pred = lda_predict(Xf_test, w, thr)
+    acc = np.mean(y_pred == (y_test == np.unique(y_test)[1]).astype(int))
     print(f"Example test accuracy: {acc:.3f}")
 
 
