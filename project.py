@@ -1,16 +1,6 @@
 import numpy as np
 
 # =========================================================
-# SVD + LDA Image Classification Project
-#
-# IMPORTANT:
-# - Do not change function names or signatures.
-# - Implement the five required functions below:
-#     power_method, svd_compress, svd_features, lda_train, lda_predict
-# =========================================================
-
-
-# =========================================================
 # 1. Power method for dominant eigenpair (symmetric matrix)
 # =========================================================
 def power_method(A, x0, maxit, tol):
