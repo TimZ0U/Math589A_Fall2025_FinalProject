@@ -80,14 +80,6 @@ def svd_compress(image, k):
 # 3. SVD-based feature extraction
 # =========================================================
 def svd_features(image, p):
-    """Extract SVD-based features from a grayscale image.
-
-    Returns
-    -------
-    feat : (p + 2,) ndarray
-        Feature vector consisting of:
-        [normalized sigma_1, ..., normalized sigma_p, r_0.9, r_0.95]
-    """
     A = np.asarray(image, dtype=float)
     if A.ndim != 2:
         raise ValueError("image must be a 2D array.")
@@ -97,20 +89,21 @@ def svd_features(image, p):
         raise ValueError(f"p must be in [1, {r}]")
     p = int(p)
 
-    # Reference logic: normalize by sum of singular values (not squared energy).
     sig = np.linalg.svd(A, compute_uv=False)
     s_sum = float(np.sum(sig))
-    if s_sum <= 0.0:
-        # Degenerate case: all zeros
-        cumulative = np.zeros_like(sig, dtype=float)
-    else:
-        cumulative = np.cumsum(sig) / s_sum
 
-    r_0_9 = int(np.argmax(cumulative >= 0.9) + 1) if cumulative.size else 1
+    if s_sum <= 0.0:
+        norm_sig = np.zeros_like(sig)
+        cumulative = np.zeros_like(sig)
+    else:
+        norm_sig = sig / s_sum                 # normalized sigma_i
+        cumulative = np.cumsum(norm_sig)       # cumulative proportions
+
+    r_0_9  = int(np.argmax(cumulative >= 0.9)  + 1) if cumulative.size else 1
     r_0_95 = int(np.argmax(cumulative >= 0.95) + 1) if cumulative.size else 1
 
-    # Feature layout matches the reference: first p entries are cumulative proportions.
-    return np.hstack((cumulative[:p], [r_0_9, r_0_95]))
+    return np.hstack((norm_sig[:p], [r_0_9, r_0_95]))
+
 
 
 # =========================================================
