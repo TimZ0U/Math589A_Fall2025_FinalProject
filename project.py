@@ -3,163 +3,192 @@ import numpy as np
 # =========================================================
 # 1. Power method for dominant eigenpair
 # =========================================================
+
 def power_method(A, x0, maxit, tol):
-    M = np.asarray(A, dtype=float)
-    v = np.asarray(x0, dtype=float).reshape(-1)
+    A = np.asarray(A, dtype=float)
+    if A.ndim != 2 or A.shape[0] != A.shape[1]:
+        raise ValueError("A must be a square matrix")
+    n = A.shape[0]
 
-    if M.ndim != 2 or M.shape[0] != M.shape[1]:
-        raise ValueError("A must be a square (n,n) array.")
-    n = M.shape[0]
-    if v.size != n:
-        raise ValueError("x0 must have shape (n,).")
-    if maxit <= 0:
-        raise ValueError("maxit must be positive.")
-    if tol < 0:
-        raise ValueError("tol must be nonnegative.")
+    x = np.asarray(x0, dtype=float).reshape(-1)
+    if x.size != n:
+        raise ValueError("x0 must have length n")
 
-    # Normalize initial vector; if near-zero, use a deterministic nonzero vector.
-    v_norm = np.linalg.norm(v, ord=2)
-    if v_norm < 1e-12:
-        v = np.ones(n, dtype=float)
-        v_norm = np.linalg.norm(v, ord=2)
-    v = v / v_norm
+    nx = np.linalg.norm(x)
+    if nx == 0:
+        x = np.ones(n, dtype=float)
+        nx = np.linalg.norm(x)
+    x /= nx
 
-    lam_prev = float(v @ (M @ v))
-    iters = 0
+    lam_prev = float(x @ (A @ x))
+    eps = np.finfo(float).eps
 
     for iters in range(1, int(maxit) + 1):
-        w = M @ v
-        w_norm = np.linalg.norm(w, ord=2)
-        if w_norm < 1e-15:
-            # M maps v close to zero; dominant eigenvalue estimate goes to 0.
-            lam = 0.0
-            v = np.zeros_like(v)
-            break
+        y = A @ x
+        ny = np.linalg.norm(y)
 
-        v = w / w_norm
-        lam = float(v @ (M @ v))
+        # Keep contract: return a unit vector
+        if ny == 0:
+            return 0.0, x.copy(), iters
 
-        denom = max(abs(lam), 1e-15)
-        rel_err = abs(lam - lam_prev) / denom
-        if rel_err < tol:
-            break
+        x = y / ny
+        lam = float(x @ (A @ x))
+
+        denom = max(abs(lam_prev), eps)
+        if abs(lam - lam_prev) / denom < tol:
+            return lam, x, iters
 
         lam_prev = lam
 
-    return float(lam), v, int(iters)
+    return lam_prev, x, int(maxit)
 
 
 # =========================================================
 # 2. Rank-k image compression via SVD
 # =========================================================
+
 def svd_compress(image, k):
     A = np.asarray(image, dtype=float)
     if A.ndim != 2:
-        raise ValueError("image must be a 2D array.")
+        raise ValueError("image must be a 2D array")
     m, n = A.shape
-    r = min(m, n)
 
-    if not (1 <= int(k) <= r):
-        raise ValueError(f"Provided rank out of bounds. Should be in [1, {r}]")
     k = int(k)
+    if k < 1 or k > min(m, n):
+        raise ValueError("k must satisfy 1 <= k <= min(m, n)")
 
     U, S, Vh = np.linalg.svd(A, full_matrices=False)
-    Ak = (U[:, :k] * S[:k]) @ Vh[:k, :]
+    Uk = U[:, :k]
+    Sk = S[:k]
+    Vhk = Vh[:k, :]
 
-    fro_A = np.linalg.norm(A, ord="fro")
-    if fro_A == 0:
-        rel_err = 0.0
+    A_k = (Uk * Sk) @ Vhk
+
+    denom = np.linalg.norm(A, ord="fro")
+    if denom == 0:
+        rel_error = 0.0 if np.linalg.norm(A_k, ord="fro") == 0 else float("inf")
     else:
-        rel_err = float(np.linalg.norm(A - Ak, ord="fro") / fro_A)
+        rel_error = float(np.linalg.norm(A - A_k, ord="fro") / denom)
 
-    comp_ratio = float(k * (m + n + 1) / (m * n))
-    return Ak, rel_err, comp_ratio
+    compression_ratio = float((k * (m + n + 1)) / (m * n))
+    return A_k, rel_error, compression_ratio
 
 
 # =========================================================
 # 3. SVD-based feature extraction
 # =========================================================
+
 def svd_features(image, p):
+    """
+    Return a (p+2,) feature vector:
+      [normalized sigma_1, ..., normalized sigma_p, r_0.9, r_0.95]
+    """
     A = np.asarray(image, dtype=float)
     if A.ndim != 2:
-        raise ValueError("image must be a 2D array.")
+        raise ValueError("image must be a 2D array")
     m, n = A.shape
-    r = min(m, n)
-    if not (1 <= int(p) <= r):
-        raise ValueError(f"p must be in [1, {r}]")
+
     p = int(p)
+    if p < 1 or p > min(m, n):
+        raise ValueError("p must satisfy 1 <= p <= min(m, n)")
 
-    sig = np.linalg.svd(A, compute_uv=False)
-    s_sum = float(np.sum(sig))
+    s = np.linalg.svd(A, compute_uv=False)
 
-    if s_sum <= 0.0:
-        norm_sig = np.zeros_like(sig)
-        cumulative = np.zeros_like(sig)
+    # Normalize top singular values (probability-like) for the first p entries
+    s_sum = float(np.sum(s))
+    if s_sum > 0:
+        s_norm = s / s_sum
     else:
-        norm_sig = sig / s_sum                 # normalized sigma_i
-        cumulative = np.cumsum(norm_sig)       # cumulative proportions
+        s_norm = s  # all zeros
 
-    r_0_9  = int(np.argmax(cumulative >= 0.9)  + 1) if cumulative.size else 1
-    r_0_95 = int(np.argmax(cumulative >= 0.95) + 1) if cumulative.size else 1
+    # Rank features: use ENERGY capture (sigma^2) for r_0.9, r_0.95
+    # This is usually what "90% / 95% captured" intends.
+    energy = s * s
+    e_sum = float(np.sum(energy))
+    if e_sum > 0:
+        c = np.cumsum(energy) / e_sum
+    else:
+        c = np.cumsum(energy)  # all zeros
 
-    return np.hstack((norm_sig[:p], [r_0_9, r_0_95]))
+    r_0_9 = float(np.searchsorted(c, 0.90) + 1)
+    r_0_95 = float(np.searchsorted(c, 0.95) + 1)
 
+    top_p = s_norm[:p]
+    feat = np.concatenate([top_p, np.array([r_0_9, r_0_95], dtype=float)])
+    return feat
 
 
 # =========================================================
 # 4. Two-class LDA: training
 # =========================================================
+
 def lda_train(X, y):
     X = np.asarray(X, dtype=float)
-    y = np.asarray(y).reshape(-1)
+    y = np.asarray(y)
 
     if X.ndim != 2:
-        raise ValueError("X must be a 2D array.")
-    if y.size != X.shape[0]:
-        raise ValueError("y must have the same number of rows as X.")
-    if np.unique(y).size != 2:
-        raise ValueError("lda_train expects exactly two classes labeled 0 and 1.")
+        raise ValueError("X must be a 2D array of shape (N, d)")
+    if y.ndim != 1 or y.shape[0] != X.shape[0]:
+        raise ValueError("y must be a 1D array of length N")
 
-    XA = X[y == 0, :]
-    XB = X[y == 1, :]
-    if XA.shape[0] == 0 or XB.shape[0] == 0:
-        raise ValueError("Both classes must contain at least one sample.")
+    X0 = X[y == 0]
+    X1 = X[y == 1]
+    if X0.shape[0] == 0 or X1.shape[0] == 0:
+        raise ValueError("Both classes 0 and 1 must be present in y")
 
-    muA = np.mean(XA, axis=0)
-    muB = np.mean(XB, axis=0)
+    mu0 = X0.mean(axis=0)
+    mu1 = X1.mean(axis=0)
 
-    XA_c = XA - muA
-    XB_c = XB - muB
-    SW = XA_c.T @ XA_c + XB_c.T @ XB_c
+    X0c = X0 - mu0
+    X1c = X1 - mu1
 
-    # Reference uses a fixed lambda = 1e-6; keep that.
-    reg = 1e-6
-    SW_reg = SW + reg * np.eye(SW.shape[0])
+    # Within-class scatter (pooled, unnormalized)
+    Sw = X0c.T @ X0c + X1c.T @ X1c
+    d = Sw.shape[0]
 
-    w = np.linalg.solve(SW_reg, (muB - muA))
+    # Regularization for stability/generalization:
+    # - mild shrinkage toward diagonal (helps when features are correlated/noisy)
+    # - plus a small ridge
+    diag_Sw = np.diag(np.diag(Sw))
+    alpha = 0.05  # small shrinkage; typically safe
+    Sw_shrunk = (1.0 - alpha) * Sw + alpha * diag_Sw
 
-    mA = float(np.mean(XA @ w))
-    mB = float(np.mean(XB @ w))
-    thresh = 0.5 * (mA + mB)
+    tr = float(np.trace(Sw_shrunk))
+    lam = 1e-6 * (tr / d) if tr > 0 else 1e-6
+    Sw_reg = Sw_shrunk + lam * np.eye(d)
 
-    return w, float(thresh)
+    # Solve Sw_reg w = (mu1 - mu0)
+    w = np.linalg.solve(Sw_reg, (mu1 - mu0))
+
+    # Better threshold using LDA discriminant with class priors:
+    # boundary at w^T x >= 0.5 (mu1+mu0)^T w - log(pi1/pi0)
+    n0 = X0.shape[0]
+    n1 = X1.shape[0]
+    pi0 = n0 / (n0 + n1)
+    pi1 = n1 / (n0 + n1)
+
+    midpoint = 0.5 * float((mu0 + mu1) @ w)
+    prior_shift = np.log(pi1 / pi0) if (pi0 > 0 and pi1 > 0) else 0.0
+    threshold = midpoint - prior_shift
+
+    return w, threshold
 
 
 # =========================================================
 # 5. Two-class LDA: prediction
 # =========================================================
-def lda_predict(X, w, threshold):
 
+def lda_predict(X, w, threshold):
     X = np.asarray(X, dtype=float)
     w = np.asarray(w, dtype=float).reshape(-1)
-
     scores = X @ w
-    return (scores >= float(threshold)).astype(int)
+    return (scores >= threshold).astype(int)
 
 
 # =========================================================
 # Simple self-test on the example data
 # =========================================================
+
 def _example_run():
     """Run a tiny end-to-end test on the example dataset, if available.
 
