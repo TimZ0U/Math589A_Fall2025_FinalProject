@@ -5,6 +5,28 @@ import numpy as np
 # =========================================================
 
 def power_method(A, x0, maxit, tol):
+    """Approximate the dominant eigenvalue and eigenvector of a real symmetric matrix A.
+
+    Parameters
+    ----------
+    A : (n, n) ndarray
+        Real symmetric matrix.
+    x0 : (n,) ndarray
+        Initial guess for eigenvector (nonzero).
+    maxit : int
+        Maximum number of iterations.
+    tol : float
+        Tolerance for convergence in relative change of eigenvalue.
+
+    Returns
+    -------
+    lam : float
+        Approximate dominant eigenvalue.
+    v : (n,) ndarray
+        Approximate unit eigenvector (||v||_2 = 1).
+    iters : int
+        Number of iterations performed.
+    """
     A = np.asarray(A, dtype=float)
     if A.ndim != 2 or A.shape[0] != A.shape[1]:
         raise ValueError("A must be a square matrix")
@@ -14,12 +36,14 @@ def power_method(A, x0, maxit, tol):
     if x.size != n:
         raise ValueError("x0 must have length n")
 
+    # Normalize initial vector; if zero, pick a deterministic fallback
     nx = np.linalg.norm(x)
     if nx == 0:
         x = np.ones(n, dtype=float)
         nx = np.linalg.norm(x)
-    x /= nx
+    x = x / nx
 
+    # Initial Rayleigh quotient
     lam_prev = float(x @ (A @ x))
     eps = np.finfo(float).eps
 
@@ -27,13 +51,16 @@ def power_method(A, x0, maxit, tol):
         y = A @ x
         ny = np.linalg.norm(y)
 
-        # Keep contract: return a unit vector
+        # If A maps x to (near) zero, dominant eigenvalue is 0 in that direction.
+        # Return a unit vector to satisfy the contract.
         if ny == 0:
-            return 0.0, x.copy(), iters
+            v = x.copy()  # already unit
+            return 0.0, v, iters
 
         x = y / ny
         lam = float(x @ (A @ x))
 
+        # Relative change stopping rule
         denom = max(abs(lam_prev), eps)
         if abs(lam - lam_prev) / denom < tol:
             return lam, x, iters
@@ -48,6 +75,24 @@ def power_method(A, x0, maxit, tol):
 # =========================================================
 
 def svd_compress(image, k):
+    """Compute a rank-k approximation of a grayscale image using SVD.
+
+    Parameters
+    ----------
+    image : (m, n) ndarray
+        Grayscale image matrix.
+    k : int
+        Target rank (1 <= k <= min(m, n)).
+
+    Returns
+    -------
+    image_k : (m, n) ndarray
+        Rank-k approximation of the image.
+    rel_error : float
+        Relative Frobenius error ||image - image_k||_F / ||image||_F.
+    compression_ratio : float
+        (Number of stored parameters in image_k) / (m * n).
+    """
     A = np.asarray(image, dtype=float)
     if A.ndim != 2:
         raise ValueError("image must be a 2D array")
@@ -57,20 +102,26 @@ def svd_compress(image, k):
     if k < 1 or k > min(m, n):
         raise ValueError("k must satisfy 1 <= k <= min(m, n)")
 
+    # Thin SVD is sufficient for rank-k reconstruction
     U, S, Vh = np.linalg.svd(A, full_matrices=False)
+
     Uk = U[:, :k]
     Sk = S[:k]
     Vhk = Vh[:k, :]
 
+    # (Uk * Sk) multiplies each column of Uk by singular value
     A_k = (Uk * Sk) @ Vhk
 
+    # Relative Frobenius error
     denom = np.linalg.norm(A, ord="fro")
     if denom == 0:
         rel_error = 0.0 if np.linalg.norm(A_k, ord="fro") == 0 else float("inf")
     else:
         rel_error = float(np.linalg.norm(A - A_k, ord="fro") / denom)
 
+    # Compression ratio: store Uk (m*k), Vhk (k*n), Sk (k)
     compression_ratio = float((k * (m + n + 1)) / (m * n))
+
     return A_k, rel_error, compression_ratio
 
 
@@ -79,9 +130,20 @@ def svd_compress(image, k):
 # =========================================================
 
 def svd_features(image, p):
-    """
-    Return a (p+2,) feature vector:
-      [normalized sigma_1, ..., normalized sigma_p, r_0.9, r_0.95]
+    """Extract SVD-based features from a grayscale image.
+
+    Parameters
+    ----------
+    image : (m, n) ndarray
+        Grayscale image matrix.
+    p : int
+        Number of leading singular values to use (p <= min(m, n)).
+
+    Returns
+    -------
+    feat : (p + 2,) ndarray
+        Feature vector consisting of:
+        [normalized sigma_1, ..., normalized sigma_p, r_0.9, r_0.95]
     """
     A = np.asarray(image, dtype=float)
     if A.ndim != 2:
@@ -92,28 +154,24 @@ def svd_features(image, p):
     if p < 1 or p > min(m, n):
         raise ValueError("p must satisfy 1 <= p <= min(m, n)")
 
+    # Singular values only
     s = np.linalg.svd(A, compute_uv=False)
 
-    # Normalize top singular values (probability-like) for the first p entries
+    # Normalize singular values by their sum (as a probability-like distribution)
     s_sum = float(np.sum(s))
     if s_sum > 0:
         s_norm = s / s_sum
     else:
-        s_norm = s  # all zeros
+        # All-zero image: keep zeros; cumulative stays zero
+        s_norm = s
 
-    # Rank features: use ENERGY capture (sigma^2) for r_0.9, r_0.95
-    # This is usually what "90% / 95% captured" intends.
-    energy = s * s
-    e_sum = float(np.sum(energy))
-    if e_sum > 0:
-        c = np.cumsum(energy) / e_sum
-    else:
-        c = np.cumsum(energy)  # all zeros
-
+    # r_0.9 and r_0.95 from cumulative normalized singular values
+    c = np.cumsum(s_norm)
     r_0_9 = float(np.searchsorted(c, 0.90) + 1)
     r_0_95 = float(np.searchsorted(c, 0.95) + 1)
 
     top_p = s_norm[:p]
+    # (top_p already length p because p <= min(m,n) <= len(s))
     feat = np.concatenate([top_p, np.array([r_0_9, r_0_95], dtype=float)])
     return feat
 
@@ -123,6 +181,22 @@ def svd_features(image, p):
 # =========================================================
 
 def lda_train(X, y):
+    """Train a two-class LDA classifier.
+
+    Parameters
+    ----------
+    X : (N, d) ndarray
+        Feature matrix (rows = samples, columns = features).
+    y : (N,) ndarray
+        Labels, each 0 or 1.
+
+    Returns
+    -------
+    w : (d,) ndarray
+        Discriminant direction vector (not necessarily unit length).
+    threshold : float
+        Threshold in 1D projected space for classifying 0 vs 1.
+    """
     X = np.asarray(X, dtype=float)
     y = np.asarray(y)
 
@@ -141,35 +215,18 @@ def lda_train(X, y):
 
     X0c = X0 - mu0
     X1c = X1 - mu1
-
-    # Within-class scatter (pooled, unnormalized)
     Sw = X0c.T @ X0c + X1c.T @ X1c
+
     d = Sw.shape[0]
+    # Small ridge regularization for numerical stability
+    lam = 1e-6 * (np.trace(Sw) / d) if np.trace(Sw) > 0 else 1e-6
+    Sw_reg = Sw + lam * np.eye(d)
 
-    # Regularization for stability/generalization:
-    # - mild shrinkage toward diagonal (helps when features are correlated/noisy)
-    # - plus a small ridge
-    diag_Sw = np.diag(np.diag(Sw))
-    alpha = 0.05  # small shrinkage; typically safe
-    Sw_shrunk = (1.0 - alpha) * Sw + alpha * diag_Sw
-
-    tr = float(np.trace(Sw_shrunk))
-    lam = 1e-6 * (tr / d) if tr > 0 else 1e-6
-    Sw_reg = Sw_shrunk + lam * np.eye(d)
-
-    # Solve Sw_reg w = (mu1 - mu0)
     w = np.linalg.solve(Sw_reg, (mu1 - mu0))
 
-    # Better threshold using LDA discriminant with class priors:
-    # boundary at w^T x >= 0.5 (mu1+mu0)^T w - log(pi1/pi0)
-    n0 = X0.shape[0]
-    n1 = X1.shape[0]
-    pi0 = n0 / (n0 + n1)
-    pi1 = n1 / (n0 + n1)
-
-    midpoint = 0.5 * float((mu0 + mu1) @ w)
-    prior_shift = np.log(pi1 / pi0) if (pi0 > 0 and pi1 > 0) else 0.0
-    threshold = midpoint - prior_shift
+    m0 = float(w @ mu0)
+    m1 = float(w @ mu1)
+    threshold = 0.5 * (m0 + m1)
 
     return w, threshold
 
@@ -179,6 +236,22 @@ def lda_train(X, y):
 # =========================================================
 
 def lda_predict(X, w, threshold):
+    """Predict class labels using a trained LDA classifier.
+
+    Parameters
+    ----------
+    X : (N, d) ndarray
+        Feature matrix.
+    w : (d,) ndarray
+        Discriminant direction (from lda_train).
+    threshold : float
+        Threshold (from lda_train).
+
+    Returns
+    -------
+    y_pred : (N,) ndarray
+        Predicted labels (0 or 1).
+    """
     X = np.asarray(X, dtype=float)
     w = np.asarray(w, dtype=float).reshape(-1)
     scores = X @ w
