@@ -117,22 +117,6 @@ def svd_features(image, p):
 # 4. Two-class LDA: training
 # =========================================================
 def lda_train(X, y):
-    """Train a two-class LDA classifier.
-
-    Parameters
-    ----------
-    X : (N, d) ndarray
-        Feature matrix (rows = samples, columns = features).
-    y : (N,) ndarray
-        Labels, each 0 or 1.
-
-    Returns
-    -------
-    w : (d,) ndarray
-        Discriminant direction vector (not necessarily unit length).
-    threshold : float
-        Threshold in 1D projected space for classifying 0 vs 1.
-    """
     X = np.asarray(X, dtype=float)
     y = np.asarray(y).reshape(-1)
 
@@ -172,13 +156,7 @@ def lda_train(X, y):
 # 5. Two-class LDA: prediction
 # =========================================================
 def lda_predict(X, w, threshold):
-    """Predict class labels using a trained LDA classifier.
 
-    Returns
-    -------
-    y_pred : (N,) ndarray
-        Predicted labels (0 or 1).
-    """
     X = np.asarray(X, dtype=float)
     w = np.asarray(w, dtype=float).reshape(-1)
 
@@ -190,6 +168,10 @@ def lda_predict(X, w, threshold):
 # Simple self-test on the example data
 # =========================================================
 def _example_run():
+    """Run a tiny end-to-end test on the example dataset, if available.
+
+    This function is for local testing only and will NOT be called by the autograder.
+    """
     try:
         data = np.load("project_data_example.npz")
     except OSError:
@@ -201,24 +183,45 @@ def _example_run():
     X_test = data["X_test"]
     y_test = data["y_test"]
 
+    # Sanity check shapes
     print("X_train shape:", X_train.shape)
     print("X_test shape:", X_test.shape)
 
     p = min(5, min(X_train.shape[1], X_train.shape[2]))
     print(f"Using p = {p} leading singular values for features.")
 
-    def build_features(Ximgs):
-        return np.vstack([svd_features(img, p) for img in Ximgs])
+    # Build feature matrices
+    def build_features(X):
+        feats = []
+        for img in X:
+            feats.append(svd_features(img, p))
+        return np.vstack(feats)
 
-    Xf_train = build_features(X_train)
-    Xf_test = build_features(X_test)
+    try:
+        Xf_train = build_features(X_train)
+        Xf_test = build_features(X_test)
+    except NotImplementedError:
+        print("Implement 'svd_features' first to run this example.")
+        return
 
-    w, threshold = lda_train(Xf_train, y_train)
-    y_pred = lda_predict(Xf_test, w, threshold)
+    print("Feature dimension:", Xf_train.shape[1])
+
+    try:
+        w, threshold = lda_train(Xf_train, y_train)
+    except NotImplementedError:
+        print("Implement 'lda_train' first to run this example.")
+        return
+
+    try:
+        y_pred = lda_predict(Xf_test, w, threshold)
+    except NotImplementedError:
+        print("Implement 'lda_predict' first to run this example.")
+        return
 
     accuracy = np.mean(y_pred == y_test)
     print(f"Example test accuracy: {accuracy:.3f}")
 
 
 if __name__ == "__main__":
+    # This allows students to run a quick local smoke test.
     _example_run()
